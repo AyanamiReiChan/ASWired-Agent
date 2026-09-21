@@ -1,0 +1,13 @@
+{
+  "server_id": "COPY_SERVER_ID_FROM_CONTROLLER",
+  "master_url": "https://controller.example.com",
+  "token": "COPY_SERVER_TOKEN_FROM_CONTROLLER",
+  "agent_token": "COPY_AGENT_TOKEN_FROM_CONTROLLER",
+  "master_public_key": "COPY_MASTER_PUBLIC_KEY_FROM_CONTROLLER",
+  "connection_mode": "auto", "listen_address": "0.0.0.0:23889",
+  "xray_mode": "embedded",
+  "data_dir": "/var/lib/aswired-agent",
+  "xray_config": "/var/lib/aswired-agent/xray/config.json",
+  "nginx_binary": "/usr/sbin/nginx",
+  "nginx_config": "/etc/nginx/nginx.conf"
+}

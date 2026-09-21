@@ -1,0 +1,48 @@
+package dns
+
+import (
+	"context"
+	"time"
+
+	"github.com/xtls/xray-core/common/errors"
+	"github.com/xtls/xray-core/common/log"
+	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/features/dns"
+	"github.com/xtls/xray-core/features/dns/localdns"
+)
+
+type LocalNameServer struct {
+	client *localdns.Client
+}
+
+func (s *LocalNameServer) QueryIP(ctx context.Context, domain string, option dns.IPOption) (ips []net.IP, ttl uint32, err error) {
+
+	start := time.Now()
+	ips, ttl, err = s.client.LookupIP(domain, option)
+
+	if len(ips) > 0 {
+		errors.LogInfo(ctx, "Localhost got answer: ", domain, " -> ", ips)
+		log.Record(&log.DNSLog{Server: s.Name(), Domain: domain, Result: ips, Status: log.DNSQueried, Elapsed: time.Since(start), Error: err})
+	}
+
+	return
+}
+
+func (s *LocalNameServer) Name() string {
+	return "localhost"
+}
+
+func (s *LocalNameServer) IsDisableCache() bool {
+	return true
+}
+
+func NewLocalNameServer() *LocalNameServer {
+	errors.LogInfo(context.Background(), "DNS: created localhost client")
+	return &LocalNameServer{
+		client: localdns.New(),
+	}
+}
+
+func NewLocalDNSClient(ipOption dns.IPOption) *Client {
+	return &Client{server: NewLocalNameServer(), ipOption: &ipOption}
+}

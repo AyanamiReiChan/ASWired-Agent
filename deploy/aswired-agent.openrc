@@ -1,0 +1,9 @@
+#!/sbin/openrc-run
+name="ASWired Agent"
+command="/usr/local/bin/aswired-agent"
+command_args="-config /etc/aswired-agent/agent.json"
+command_background=true
+pidfile="/run/aswired-agent.pid"
+output_log="/var/log/aswired-agent.log"
+error_log="/var/log/aswired-agent.log"
+depend() { need net; after firewall; }

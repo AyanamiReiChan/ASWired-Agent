@@ -1,0 +1,13 @@
+{
+  "role": "speedtest",
+  "server_id": "COPY_HOME_ENDPOINT_ID",
+  "master_url": "https://controller.example.com",
+  "token": "COPY_HOME_ENDPOINT_TOKEN",
+  "master_public_key": "COPY_MASTER_PUBLIC_KEY",
+  "connection_mode": "websocket",
+  "data_dir": "./data/home",
+  "mihomo_binary": "/usr/local/bin/mihomo",
+  "mihomo_version": "SET_EXACT_INSTALLED_VERSION",
+  "mihomo_sha256": "SET_EXACT_64_CHARACTER_SHA256",
+  "source_mode": "home"
+}

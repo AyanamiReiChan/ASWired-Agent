@@ -1,0 +1,11 @@
+services:
+  agent:
+    build: ..
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./agent.json:/etc/aswired-agent/agent.json:ro
+      - agent-data:/var/lib/aswired-agent
+    stop_grace_period: 30s
+volumes:
+  agent-data:

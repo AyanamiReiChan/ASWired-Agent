@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package xray.proxy.vmess;
+option csharp_namespace = "Xray.Proxy.Vmess";
+option go_package = "github.com/xtls/xray-core/proxy/vmess";
+option java_package = "com.xray.proxy.vmess";
+option java_multiple_files = true;
+
+import "common/protocol/headers.proto";
+
+message Account {
+
+
+  string id = 1;
+
+  xray.common.protocol.SecurityConfig security_settings = 3;
+
+  string tests_enabled = 4;
+}
