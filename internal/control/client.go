@@ -28,6 +28,7 @@ type Client struct {
 	version    string
 	results    []wire.Result
 	mu         sync.Mutex
+	commandMu  sync.Mutex
 	seen       map[string]wire.Result
 	order      []string
 	seenSizes  map[string]int
@@ -51,6 +52,35 @@ func New(c config.Config, r Runner, version string) *Client {
 
 func (c *Client) report() wire.Report {
 	c.mu.Lock()
+	results := c.resultBatchLocked()
+	c.sentCount = len(results)
+	token := c.cfg.Token
+	connectionMode := c.cfg.ConnectionMode
+	c.mu.Unlock()
+	mode := c.cfg.XrayMode
+	observation := c.snapshot()
+	if core, ok := observation["core"].(map[string]any); ok {
+		if current, ok := core["mode"].(string); ok {
+			mode = current
+		}
+	}
+	if c.cfg.Role == "speedtest" {
+		mode = "speedtest"
+	}
+	return wire.Report{ConnectionMode: connectionMode, ServerID: c.cfg.ServerID, Token: token, Version: c.version, Mode: mode, Observation: observation, Capabilities: c.capabilities(), Results: results, Timestamp: time.Now().Unix()}
+}
+
+func (c *Client) snapshot() map[string]any {
+	observation := c.run.Snapshot()
+	if observation == nil {
+		observation = map[string]any{}
+	}
+	observation["agent_update"] = updater.Snapshot(c.cfg.DataDir)
+	return observation
+}
+
+// The caller holds c.mu. Pending results survive reconnect until acknowledged.
+func (c *Client) resultBatchLocked() []wire.Result {
 	results := []wire.Result{}
 	size := 0
 	for i, result := range c.results {
@@ -66,22 +96,7 @@ func (c *Client) report() wire.Report {
 		results = append(results, result)
 		size += len(encoded)
 	}
-	c.sentCount = len(results)
-	token := c.cfg.Token
-	connectionMode := c.cfg.ConnectionMode
-	c.mu.Unlock()
-	mode := c.cfg.XrayMode
-	observation := c.run.Snapshot()
-	observation["agent_update"] = updater.Snapshot(c.cfg.DataDir)
-	if core, ok := observation["core"].(map[string]any); ok {
-		if current, ok := core["mode"].(string); ok {
-			mode = current
-		}
-	}
-	if c.cfg.Role == "speedtest" {
-		mode = "speedtest"
-	}
-	return wire.Report{ConnectionMode: connectionMode, ServerID: c.cfg.ServerID, Token: token, Version: c.version, Mode: mode, Observation: observation, Capabilities: c.capabilities(), Results: results, Timestamp: time.Now().Unix()}
+	return results
 }
 func (c *Client) capabilities() map[string]bool {
 	caps := c.run.Capabilities()
@@ -94,8 +109,10 @@ func (c *Client) capabilities() map[string]bool {
 	return caps
 }
 func (c *Client) execute(ctx context.Context, cmd wire.Command) wire.Result {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// Serialize operations/deduplication without holding the identity/results
+	// lock during slow commands: the independent heartbeat must keep running.
+	c.commandMu.Lock()
+	defer c.commandMu.Unlock()
 	if cmd.ID == "" {
 		return wire.Result{Status: "failed", Error: "command ID is required"}
 	}
@@ -109,7 +126,9 @@ func (c *Client) execute(ctx context.Context, cmd wire.Command) wire.Result {
 	started := time.Now()
 	var result wire.Result
 	if cmd.Action == "identity.rotate" {
+		c.mu.Lock()
 		result = c.rotateIdentity(cmd)
+		c.mu.Unlock()
 	} else if cmd.Action == "agent.update" {
 		url, _ := cmd.Params["url"].(string)
 		checksum, _ := cmd.Params["sha256"].(string)
@@ -123,13 +142,17 @@ func (c *Client) execute(ctx context.Context, cmd wire.Command) wire.Result {
 	} else if cmd.Action == "agent.report" {
 		acknowledgedUpdate, _ := cmd.Params["acknowledged_update"].(string)
 		_ = updater.Acknowledge(c.cfg.DataDir, acknowledgedUpdate, c.version)
+		c.mu.Lock()
 		oldMode, oldListen := c.cfg.ConnectionMode, c.cfg.ListenAddress
 		if mode, _ := cmd.Params["connection_mode"].(string); mode != "" {
 			listen, _ := cmd.Params["listen_address"].(string)
 			if err := c.setConnectionLocked(mode, listen); err != nil {
+				c.mu.Unlock()
 				return wire.Result{ID: cmd.ID, Status: "failed", Error: err.Error()}
 			}
 		}
+		connectionMode, connectionChanged := c.cfg.ConnectionMode, oldMode != c.cfg.ConnectionMode || oldListen != c.cfg.ListenAddress
+		c.mu.Unlock()
 		observation := c.run.Snapshot()
 		observation["agent_update"] = updater.Snapshot(c.cfg.DataDir)
 		mode := c.cfg.XrayMode
@@ -141,7 +164,7 @@ func (c *Client) execute(ctx context.Context, cmd wire.Command) wire.Result {
 		if c.cfg.Role == "speedtest" {
 			mode = "speedtest"
 		}
-		result = wire.Result{ID: cmd.ID, Status: "success", Data: map[string]any{"observation": observation, "capabilities": c.capabilities(), "version": c.version, "mode": mode, "connection_mode": c.cfg.ConnectionMode, "connection_changed": oldMode != c.cfg.ConnectionMode || oldListen != c.cfg.ListenAddress}}
+		result = wire.Result{ID: cmd.ID, Status: "success", Data: map[string]any{"observation": observation, "capabilities": c.capabilities(), "version": c.version, "mode": mode, "connection_mode": connectionMode, "connection_changed": connectionChanged}}
 	} else {
 		result = c.run.Handle(ctx, cmd)
 	}
@@ -166,6 +189,19 @@ func (c *Client) execute(ctx context.Context, cmd wire.Command) wire.Result {
 	return result
 }
 func (c *Client) accept(ctx context.Context, reply wire.Reply) error {
+	if err := c.acknowledge(reply); err != nil {
+		return err
+	}
+	for _, command := range reply.Commands {
+		r := c.execute(ctx, command)
+		c.mu.Lock()
+		c.results = append(c.results, r)
+		c.mu.Unlock()
+	}
+	return nil
+}
+
+func (c *Client) acknowledge(reply wire.Reply) error {
 	if reply.Error != "" {
 		return errors.New(reply.Error)
 	}
@@ -187,12 +223,6 @@ func (c *Client) accept(ctx context.Context, reply wire.Reply) error {
 	}
 	c.mu.Unlock()
 	_ = updater.Acknowledge(c.cfg.DataDir, "", c.version)
-	for _, command := range reply.Commands {
-		r := c.execute(ctx, command)
-		c.mu.Lock()
-		c.results = append(c.results, r)
-		c.mu.Unlock()
-	}
 	return nil
 }
 func interval(reply wire.Reply) time.Duration {
@@ -274,13 +304,16 @@ func (c *Client) webSocket(ctx context.Context) error {
 	if e != nil {
 		return e
 	}
-	packet, e := ch.Seal(c.report())
+	initial := c.report()
+	initial.Stream = wire.StreamOffer()
+	packet, e := ch.Seal(initial)
 	if e != nil {
 		return e
 	}
 	if e = wsjson.Write(ctx, conn, wire.Hello{PublicKey: ch.PublicKey(), Packet: packet}); e != nil {
 		return e
 	}
+	negotiating := true
 	for {
 		var packet wire.Packet
 		readCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
@@ -293,6 +326,13 @@ func (c *Client) webSocket(ctx context.Context) error {
 		if e = ch.Open(packet, &reply); e != nil {
 			return e
 		}
+		if reply.Stream != nil {
+			if !negotiating || !reply.Stream.Valid() {
+				return errors.New("unsupported stream negotiation")
+			}
+			return c.stream(ctx, conn, ch, initial, reply, mode, listen)
+		}
+		negotiating = false
 		if e = c.accept(ctx, reply); e != nil {
 			return e
 		}
