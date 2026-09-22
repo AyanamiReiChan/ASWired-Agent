@@ -9,7 +9,15 @@ import (
 )
 
 func atomicWrite(path string, b []byte, mode os.FileMode) error {
+	return writeManagedFile(path, b, mode, true)
+}
 
+// atomicCreate publishes a complete file without replacing an existing path.
+func atomicCreate(path string, b []byte, mode os.FileMode) error {
+	return writeManagedFile(path, b, mode, false)
+}
+
+func writeManagedFile(path string, b []byte, mode os.FileMode, replace bool) error {
 	if err := noSymlinks(path); err != nil {
 		return err
 	}
@@ -38,6 +46,11 @@ func atomicWrite(path string, b []byte, mode os.FileMode) error {
 	}
 	if err != nil {
 		return err
+	}
+	if !replace {
+		// Linking the completed temporary file is atomic and fails if another
+		// initializer or a configuration update has already created the target.
+		return os.Link(tmp, path)
 	}
 	if err = os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("replace %s: %w", filepath.Base(path), err)

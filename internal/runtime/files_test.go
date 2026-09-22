@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/AyanamiReiChan/ASWired-Agent/internal/config"
-	"github.com/AyanamiReiChan/ASWired-Agent/internal/wire"
 )
 
 func directoryLink(t *testing.T, target, link string) {
@@ -75,18 +73,14 @@ func TestInternalDirectoryLinkIsNotCanonicalizedOrFollowed(t *testing.T) {
 	directoryLink(t, outside, filepath.Join(physical, "escape"))
 
 	r, err := New(config.Config{DataDir: alias, XrayConfig: filepath.Join(alias, "escape", "new-parent", "config.json"), XrayMode: "embedded"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r.Close()
-	result := r.Handle(context.Background(), wire.Command{Action: "core.config.apply", Params: map[string]any{"config": map[string]any{"outbounds": []any{map[string]any{"protocol": "freedom"}}}}})
-	if result.Status != "failed" {
-		t.Fatal("configuration escaped through an internal directory link")
+	if err == nil {
+		r.Close()
+		t.Fatal("initialization accepted an internal directory link")
 	}
 	if _, err := os.Stat(filepath.Join(outside, "new-parent")); !os.IsNotExist(err) {
 		t.Fatalf("even parent directory creation escaped: %v", err)
 	}
-	if err := atomicWrite(filepath.Join(r.cfg.DataDir, "escape", "new-parent", "secret"), []byte("secret"), 0600); err == nil {
+	if err := atomicWrite(filepath.Join(physical, "escape", "new-parent", "secret"), []byte("secret"), 0600); err == nil {
 		t.Fatal("direct managed write followed a directory link")
 	}
 	if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {

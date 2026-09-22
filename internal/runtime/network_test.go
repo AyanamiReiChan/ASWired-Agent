@@ -94,6 +94,12 @@ func TestActualTCPUDPForwardRollbackAndRestart(t *testing.T) {
 	exchange("tcp", tcpListen)
 	exchange("udp", udpListen)
 	r.Close()
+	// A process restart creates a new runtime and reopens its log managers.
+	r, e = New(r.cfg)
+	if e != nil {
+		t.Fatal(e)
+	}
+	t.Cleanup(func() { r.Close() })
 	if e = r.Start(context.Background()); e != nil {
 		t.Fatal(e)
 	}

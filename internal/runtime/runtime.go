@@ -53,6 +53,9 @@ func New(c config.Config) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	if c.XrayConfig == "" {
+		c.XrayConfig = filepath.Join(c.DataDir, "xray", "config.json")
+	}
 	c.NginxConfig, err = rebaseManagedPath(c.NginxConfig, configuredRoot, c.DataDir)
 	if err != nil {
 		return nil, err
@@ -84,6 +87,9 @@ func New(c config.Config) (*Runtime, error) {
 	if e := r.loadPolicies(); e != nil {
 		return nil, e
 	}
+	if e := r.initializeCoreConfig(); e != nil {
+		return nil, fmt.Errorf("initialize Xray configuration: %w", e)
+	}
 	if r.cfg.XrayMode == "embedded" {
 		aswired.Install(r.policies)
 	}
@@ -101,9 +107,6 @@ func (r *Runtime) Start(ctx context.Context) error {
 	}
 	if e := r.restoreWireGuard(ctx); e != nil {
 		failures = append(failures, fmt.Errorf("restore WireGuard: %w", e))
-	}
-	if _, e := os.Stat(r.cfg.XrayConfig); os.IsNotExist(e) {
-		return errors.Join(failures...)
 	}
 	if e := r.start(ctx); e != nil {
 		failures = append(failures, e)
