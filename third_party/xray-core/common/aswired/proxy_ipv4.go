@@ -13,14 +13,43 @@ import (
 
 type proxyIPv4Key struct{}
 
-// ContextWithProxyIPv4 scopes the policy to the client destination. Nested
-// outbound dispatches carry relay endpoints and intentionally remain unchanged.
+// ContextWithProxyIPv4 scopes the policy to the client destination. A nested
+// dispatch becomes a relay endpoint only after an encapsulating proxy protocol;
+// chaining transparent freedom/loopback handlers still carries the client target.
 func ContextWithProxyIPv4(ctx context.Context, client dns.Client) context.Context {
 	return context.WithValue(ctx, proxyIPv4Key{}, client)
 }
 
 func ProxyIPv4Enabled(ctx context.Context) bool {
-	return ctx != nil && ctx.Value(proxyIPv4Key{}) != nil && len(session.OutboundsFromContext(ctx)) == 1
+	if ctx == nil || ctx.Value(proxyIPv4Key{}) == nil {
+		return false
+	}
+	outbounds := session.OutboundsFromContext(ctx)
+	if len(outbounds) == 0 {
+		return false
+	}
+	for _, parent := range outbounds[:len(outbounds)-1] {
+		if parent == nil {
+			continue
+		}
+		switch parent.Name {
+		case "http", "socks", "vless", "vmess", "trojan", "shadowsocks", "shadowsocks-2022", "hysteria", "wireguard", "dns":
+			return false
+		}
+	}
+	return true
+}
+
+// Direct dials can change the address after Freedom's redirect check (for
+// example via sockopt address-port lookup). The current protocol must also be
+// transparent: a SOCKS/VLESS dial is already connecting to its relay endpoint.
+func ProxyIPv4DirectDial(ctx context.Context) bool {
+	if !ProxyIPv4Enabled(ctx) {
+		return false
+	}
+	outbounds := session.OutboundsFromContext(ctx)
+	current := outbounds[len(outbounds)-1]
+	return current != nil && current.Name == "freedom"
 }
 
 func ProxyIPv4Destination(ctx context.Context, destination net.Destination) (net.Destination, error) {

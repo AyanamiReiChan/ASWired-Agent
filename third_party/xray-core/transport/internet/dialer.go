@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/xtls/xray-core/common"
+	"github.com/xtls/xray-core/common/aswired"
 	"github.com/xtls/xray-core/common/dice"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
@@ -238,6 +239,13 @@ func DialSystem(ctx context.Context, dest net.Destination, sockopt *SocketConfig
 	if newDest, err := checkAddressPortStrategy(ctx, dest, sockopt); err == nil && newDest != nil {
 		errors.LogInfo(ctx, "replace destination with "+newDest.String())
 		dest = *newDest
+	}
+	if aswired.ProxyIPv4DirectDial(ctx) {
+		var err error
+		dest, err = aswired.ProxyIPv4Destination(ctx, dest)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if sockopt.DomainStrategy.HasStrategy() && dest.Address.Family().IsDomain() {
