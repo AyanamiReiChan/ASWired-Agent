@@ -231,6 +231,16 @@ func TestProxyIPv6GuardPreservesActualNestedIPv6RelayEndpoints(t *testing.T) {
 			command(t, r, "core.config.apply", map[string]any{"config": cfg, "blockProxyIPv6": true})
 			proxyGuardRequest(t, port, target.URL, true)
 			proxyGuardRequest(t, port, proxyGuardURL("dual.test", target.Listener.Addr().(*net.TCPAddr).Port), true)
+			// Nested SOCKS handshake completion and Freedom raw-copy readiness
+			// share outbound state. Exercise overlapping transfers under -race.
+			t.Run("concurrent-transfers", func(t *testing.T) {
+				for i := 0; i < 8; i++ {
+					t.Run(fmt.Sprint(i), func(t *testing.T) {
+						t.Parallel()
+						proxyGuardRequest(t, port, target.URL, true)
+					})
+				}
+			})
 		})
 	}
 }

@@ -250,7 +250,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		requestAddons.Flow = requestAddons.Flow[:16]
 		fallthrough
 	case vless.XRV:
-		ob.CanSpliceCopy = 2
+		ob.CanSpliceCopy.Store(2)
 		switch request.Command {
 		case protocol.RequestCommandUDP:
 			if !allowUDP443 && request.Port == 443 {
@@ -263,7 +263,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 			var p uintptr
 			if commonConn, ok := conn.(*encryption.CommonConn); ok {
 				if _, ok := commonConn.Conn.(*encryption.XorConn); ok || !proxy.IsRAWTransportWithoutSecurity(iConn) {
-					ob.CanSpliceCopy = 3
+					ob.CanSpliceCopy.Store(3)
 				}
 				t = reflect.TypeOf(commonConn).Elem()
 				p = uintptr(unsafe.Pointer(commonConn))
@@ -287,7 +287,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 			panic("unknown VLESS request command")
 		}
 	default:
-		ob.CanSpliceCopy = 3
+		ob.CanSpliceCopy.Store(3)
 	}
 
 	var newCtx context.Context

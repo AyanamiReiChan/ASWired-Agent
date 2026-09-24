@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"math/rand"
+	"sync/atomic"
 
 	c "github.com/xtls/xray-core/common/ctx"
 	"github.com/xtls/xray-core/common/errors"
@@ -46,7 +47,27 @@ type Inbound struct {
 
 	Timer *signal.ActivityTimer
 
-	CanSpliceCopy int
+	// CanSpliceCopy is shared by nested outbound and transfer goroutines.
+	// 0: unset, 1: ready, 2: waiting for handshake, 3: disabled.
+	CanSpliceCopy atomic.Int32
+}
+
+// Clone preserves the inbound metadata for a mux stream without copying the
+// atomic state. Other metadata must remain immutable while the clone is made.
+func (i *Inbound) Clone() *Inbound {
+	clone := &Inbound{
+		Source:     i.Source,
+		Local:      i.Local,
+		Gateway:    i.Gateway,
+		Tag:        i.Tag,
+		Name:       i.Name,
+		User:       i.User,
+		VlessRoute: i.VlessRoute,
+		Conn:       i.Conn,
+		Timer:      i.Timer,
+	}
+	clone.CanSpliceCopy.Store(i.CanSpliceCopy.Load())
+	return clone
 }
 
 type Outbound struct {
@@ -62,7 +83,8 @@ type Outbound struct {
 
 	Conn net.Conn
 
-	CanSpliceCopy int
+	// See Inbound.CanSpliceCopy. Never copy an Outbound after first use.
+	CanSpliceCopy atomic.Int32
 }
 
 type SniffingRequest struct {

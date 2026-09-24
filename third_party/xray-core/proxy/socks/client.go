@@ -50,7 +50,7 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 		return errors.New("target not specified.")
 	}
 	ob.Name = "socks"
-	ob.CanSpliceCopy = 2
+	ob.CanSpliceCopy.Store(2)
 
 	destination := ob.Target
 
@@ -135,7 +135,7 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 			return buf.Copy(link.Reader, buf.NewWriter(conn), buf.UpdateActivity(timer))
 		}
 		responseFunc = func() error {
-			ob.CanSpliceCopy = 1
+			ob.CanSpliceCopy.CompareAndSwap(2, 1)
 			defer timer.SetTimeout(p.Timeouts.UplinkOnly)
 			return buf.Copy(buf.NewReader(conn), link.Writer, buf.UpdateActivity(timer))
 		}
@@ -151,7 +151,7 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 			return buf.Copy(link.Reader, writer, buf.UpdateActivity(timer))
 		}
 		responseFunc = func() error {
-			ob.CanSpliceCopy = 1
+			ob.CanSpliceCopy.CompareAndSwap(2, 1)
 			defer timer.SetTimeout(p.Timeouts.UplinkOnly)
 			reader := &UDPReader{Reader: udpConn}
 			return buf.Copy(reader, link.Writer, buf.UpdateActivity(timer))

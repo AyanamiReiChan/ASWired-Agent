@@ -249,8 +249,8 @@ func (w *VisionReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 
 		if inbound := session.InboundFromContext(w.ctx); inbound != nil && inbound.Conn != nil {
 
-			if !w.isUplink && w.ob != nil && w.ob.CanSpliceCopy == 2 {
-				w.ob.CanSpliceCopy = 1
+			if !w.isUplink && w.ob != nil {
+				w.ob.CanSpliceCopy.CompareAndSwap(2, 1)
 			}
 		}
 		readerConn, readCounter, _ := UnwrapRawConn(w.conn)
@@ -306,7 +306,7 @@ func (w *VisionWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 
 	if *switchToDirectCopy {
 		if inbound := session.InboundFromContext(w.ctx); inbound != nil {
-			if !w.isUplink && inbound.CanSpliceCopy == 2 {
+			if !w.isUplink && inbound.CanSpliceCopy.Load() == 2 {
 				spliceReadyInbound = inbound
 			}
 
@@ -366,9 +366,9 @@ func (w *VisionWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 	if err := w.Writer.WriteMultiBuffer(mb); err != nil {
 		return err
 	}
-	if spliceReadyInbound != nil && spliceReadyInbound.CanSpliceCopy == 2 {
+	if spliceReadyInbound != nil {
 
-		spliceReadyInbound.CanSpliceCopy = 1
+		spliceReadyInbound.CanSpliceCopy.CompareAndSwap(2, 1)
 	}
 	return nil
 }
@@ -692,7 +692,7 @@ func CopyRawConnIfExist(ctx context.Context, readerConn net.Conn, writerConn net
 		return readV(ctx, reader, writer, timer, readCounter)
 	}
 	inbound := session.InboundFromContext(ctx)
-	if inbound == nil || inbound.CanSpliceCopy == 3 {
+	if inbound == nil || inbound.CanSpliceCopy.Load() == 3 {
 		return readV(ctx, reader, writer, timer, readCounter)
 	}
 	outbounds := session.OutboundsFromContext(ctx)
@@ -700,7 +700,7 @@ func CopyRawConnIfExist(ctx context.Context, readerConn net.Conn, writerConn net
 		return readV(ctx, reader, writer, timer, readCounter)
 	}
 	for _, ob := range outbounds {
-		if ob.CanSpliceCopy == 3 {
+		if ob.CanSpliceCopy.Load() == 3 {
 			return readV(ctx, reader, writer, timer, readCounter)
 		}
 	}
@@ -708,9 +708,9 @@ func CopyRawConnIfExist(ctx context.Context, readerConn net.Conn, writerConn net
 	for {
 		inbound := session.InboundFromContext(ctx)
 		outbounds := session.OutboundsFromContext(ctx)
-		var splice = inbound.CanSpliceCopy == 1
+		var splice = inbound.CanSpliceCopy.Load() == 1
 		for _, ob := range outbounds {
-			if ob.CanSpliceCopy != 1 {
+			if ob.CanSpliceCopy.Load() != 1 {
 				splice = false
 			}
 		}

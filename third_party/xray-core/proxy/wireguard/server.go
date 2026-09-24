@@ -135,7 +135,7 @@ func (s *Server) forwardConnection(dest net.Destination, conn net.Conn) {
 		inbound = *s.info.inboundTag
 	}
 	inbound.Name = "wireguard"
-	inbound.CanSpliceCopy = 3
+	inbound.CanSpliceCopy.Store(3)
 
 	inbound.Source = net.DestinationFromAddr(conn.RemoteAddr())
 	ctx = session.ContextWithInbound(ctx, &inbound)
