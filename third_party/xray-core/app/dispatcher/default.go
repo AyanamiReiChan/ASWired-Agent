@@ -94,17 +94,20 @@ func (r *cachedReader) Interrupt() {
 }
 
 type DefaultDispatcher struct {
-	ohm    outbound.Manager
-	router routing.Router
-	policy policy.Manager
-	stats  stats.Manager
-	fdns   dns.FakeDNSEngine
+	ohm               outbound.Manager
+	router            routing.Router
+	policy            policy.Manager
+	stats             stats.Manager
+	fdns              dns.FakeDNSEngine
+	proxyIPv4DNS      dns.Client
+	proxyIPv4Inbounds map[string]bool
 }
 
 func init() {
 	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
 		d := new(DefaultDispatcher)
 		if err := core.RequireFeatures(ctx, func(om outbound.Manager, router routing.Router, pm policy.Manager, sm stats.Manager, dc dns.Client) error {
+			d.proxyIPv4DNS = dc
 			core.OptionalFeatures(ctx, func(fdns dns.FakeDNSEngine) {
 				d.fdns = fdns
 			})
@@ -525,5 +528,13 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 		log.Record(accessMessage)
 	}
 
+	var policyErr error
+	ctx, policyErr = d.protectProxyIPv4(ctx, link)
+	if policyErr != nil {
+		session.SubmitOutboundErrorToOriginator(ctx, policyErr)
+		common.Interrupt(link.Writer)
+		common.Interrupt(link.Reader)
+		return
+	}
 	handler.Dispatch(ctx, link)
 }

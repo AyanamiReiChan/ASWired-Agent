@@ -8,6 +8,7 @@ import (
 // A new Agent can report and manage its core before any inbounds are deployed.
 // This configuration needs no external assets and opens no listening ports.
 const initialCoreConfig = `{
+  "aswired": {"blockProxyIPv6": true},
   "log": {"loglevel": "warning"},
   "inbounds": [],
   "outbounds": [

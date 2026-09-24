@@ -148,7 +148,7 @@ func (r *Runtime) Snapshot() map[string]any {
 func (r *Runtime) Capabilities() map[string]bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return map[string]bool{"managed_account_reload": true, "managed_protocols_v2": true, "reality_scan": true, "embedded_core": true, "core_config": true, "dynamic_users": true, "xray_stats": true, "tcp_udp_forward": true, "network_quality_tcp": true, "network_quality_icmp": true, "wireguard": goruntime.GOOS == "linux", "warp_supplied_config": goruntime.GOOS == "linux", "certificate_deploy": true, "ports_check": true, "network_tcp_latency": true, "nginx_control": goruntime.GOOS == "linux", "service_control": goruntime.GOOS == "linux", "vision_splice_hook": r.cfg.XrayMode == "embedded" && (goruntime.GOOS == "linux" || goruntime.GOOS == "android"), "vision_splice_verified": false, "shared_rate_limit": r.cfg.XrayMode == "embedded", "connection_limits": r.cfg.XrayMode == "embedded", "simultaneous_ip_limits": r.cfg.XrayMode == "embedded", "federation": true, "mihomo_auxiliary": r.mihomo.Available(), "mihomo_original_ip": false, "snell": r.mihomo.Available(), "anytls": r.mihomo.Available()}
+	return map[string]bool{"proxy_ipv6_guard": true, "managed_account_reload": true, "managed_protocols_v2": true, "reality_scan": true, "embedded_core": true, "core_config": true, "dynamic_users": true, "xray_stats": true, "tcp_udp_forward": true, "network_quality_tcp": true, "network_quality_icmp": true, "wireguard": goruntime.GOOS == "linux", "warp_supplied_config": goruntime.GOOS == "linux", "certificate_deploy": true, "ports_check": true, "network_tcp_latency": true, "nginx_control": goruntime.GOOS == "linux", "service_control": goruntime.GOOS == "linux", "vision_splice_hook": r.cfg.XrayMode == "embedded" && (goruntime.GOOS == "linux" || goruntime.GOOS == "android"), "vision_splice_verified": false, "shared_rate_limit": r.cfg.XrayMode == "embedded", "connection_limits": r.cfg.XrayMode == "embedded", "simultaneous_ip_limits": r.cfg.XrayMode == "embedded", "federation": true, "mihomo_auxiliary": r.mihomo.Available(), "mihomo_original_ip": false, "snell": r.mihomo.Available(), "anytls": r.mihomo.Available()}
 }
 func timeNowMillis() int64 { return time.Now().UnixMilli() }
 
@@ -215,6 +215,9 @@ func (r *Runtime) Handle(ctx context.Context, c wire.Command) wire.Result {
 		var b []byte
 		b, err = configBytes(c.Params["config"])
 		if err == nil {
+			b, err = proxyNetworkConfig(b, c.Params)
+		}
+		if err == nil {
 			err = ensureGeoAssets(ctx, b)
 		}
 		if err == nil {
@@ -224,6 +227,9 @@ func (r *Runtime) Handle(ctx context.Context, c wire.Command) wire.Result {
 	case "core.config.apply":
 		var b []byte
 		b, err = configBytes(c.Params["config"])
+		if err == nil {
+			b, err = proxyNetworkConfig(b, c.Params)
+		}
 		if err == nil {
 			data, err = r.applyManagedConfig(ctx, b, c.Params)
 		}
@@ -237,6 +243,9 @@ func (r *Runtime) Handle(ctx context.Context, c wire.Command) wire.Result {
 		}
 		var b []byte
 		b, err = os.ReadFile(filepath.Join(r.cfg.DataDir, "history", name))
+		if err == nil {
+			b, err = proxyNetworkConfig(b, c.Params)
+		}
 		if err == nil {
 			data, err = r.applyConfig(ctx, b)
 		}

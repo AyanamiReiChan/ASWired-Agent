@@ -8,6 +8,7 @@ import (
 
 	"github.com/pires/go-proxyproto"
 	"github.com/xtls/xray-core/common"
+	"github.com/xtls/xray-core/common/aswired"
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/crypto"
 	"github.com/xtls/xray-core/common/dice"
@@ -105,6 +106,16 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 
 	input := link.Reader
 	output := link.Writer
+	// Freedom redirect runs after routing, so it must obey the same client
+	// destination policy. Nested relay connections do not carry this restriction.
+	var policyErr error
+	destination, policyErr = aswired.ProxyIPv4Destination(ctx, destination)
+	if policyErr != nil {
+		return policyErr
+	}
+	if UDPOverride.Address != nil && aswired.ProxyIPv4Enabled(ctx) {
+		UDPOverride.Address = destination.Address
+	}
 
 	var conn stat.Connection
 	err := retry.ExponentialBackoff(5, 100).On(func() error {
@@ -187,6 +198,9 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 			}
 		} else {
 			writer = NewPacketWriter(conn, h, UDPOverride, destination)
+			if packets, ok := writer.(*PacketWriter); ok {
+				packets.proxyIPv4Context = ctx
+			}
 			if h.config.Noises != nil {
 				errors.LogDebug(ctx, "NOISE", h.config.Noises)
 				writer = &NoisePacketWriter{
@@ -337,8 +351,9 @@ type PacketWriter struct {
 	*Handler
 	UDPOverride net.Destination
 
-	ResolvedUDPAddr *utils.TypedSyncMap[string, net.Address]
-	LocalAddr       net.Address
+	ResolvedUDPAddr  *utils.TypedSyncMap[string, net.Address]
+	LocalAddr        net.Address
+	proxyIPv4Context context.Context
 }
 
 func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
@@ -356,6 +371,15 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 			}
 			if w.UDPOverride.Port != 0 {
 				b.UDP.Port = w.UDPOverride.Port
+			}
+			if aswired.ProxyIPv4Enabled(w.proxyIPv4Context) {
+				destination, failure := aswired.ProxyIPv4Destination(w.proxyIPv4Context, *b.UDP)
+				if failure != nil {
+					b.Release()
+					buf.ReleaseMulti(mb)
+					return failure
+				}
+				b.UDP = &destination
 			}
 			if b.UDP.Address.Family().IsDomain() {
 				if ip, ok := w.ResolvedUDPAddr.Load(b.UDP.Address.Domain()); ok {

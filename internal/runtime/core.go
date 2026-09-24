@@ -66,6 +66,9 @@ func (r *Runtime) applyConfig(ctx context.Context, b []byte) (map[string]any, er
 			instance, err = core.New(parsed)
 		}
 		if err == nil {
+			err = configureProxyNetwork(instance, b)
+		}
+		if err == nil {
 			err = instance.Start()
 		}
 		if err == nil {
@@ -126,6 +129,10 @@ func (r *Runtime) start(ctx context.Context) error {
 	}
 	x, err := core.New(c)
 	if err != nil {
+		return err
+	}
+	if err = configureProxyNetwork(x, b); err != nil {
+		_ = x.Close()
 		return err
 	}
 	if err = x.Start(); err != nil {
