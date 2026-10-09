@@ -25,6 +25,12 @@ func TestFirewallKernelJSONFormat(t *testing.T) {
 				if binary != "nft" || (strings.Join(args, " ") != "-j list tables inet" && strings.Join(args, " ") != "-j list table inet "+firewallTable) {
 					t.Fatal("unexpected command", binary, args)
 				}
+				if strings.Join(args, " ") == "-j list tables inet" {
+					// The inventory has maps at different offsets than the full
+					// listing. Reusing []map during JSON decoding retains old keys
+					// and previously made the later chain objects look malformed.
+					return `{"nftables":[{"metainfo":{"json_schema_version":1}},{"table":{"family":"inet","name":"administrator"}},{"table":{"family":"inet","name":"monitoring"}},{"table":{"family":"inet","name":"aswired_allowlist"}}]}`, nil
+				}
 				return string(raw), nil
 			}
 			state := &firewallState{Owner: strings.Repeat("0", 64), Rules: []FirewallRule{

@@ -668,6 +668,9 @@ func (r *Runtime) observeFirewall(ctx context.Context) (firewallObserved, error)
 	if e != nil {
 		return observed, e
 	}
+	// Unmarshal reuses maps inside slice storage and retains missing keys.
+	// Inventory entries and full table objects do not share the same layout.
+	listing.NFTables = nil
 	if json.Unmarshal([]byte(output), &listing) != nil {
 		return observed, errors.New("invalid nftables table response")
 	}
