@@ -55,10 +55,10 @@ func TestFirewallNetNS(t *testing.T) {
 		return string(out)
 	}
 	run("ip", "link", "set", "lo", "up")
-	for _, ip := range []string{"192.0.2.1/32", "192.0.2.10/32", "192.0.2.11/32"} {
+	for _, ip := range []string{"192.0.2.1/32", "192.0.2.10/32", "192.0.2.12/32"} {
 		run("ip", "addr", "add", ip, "dev", "lo")
 	}
-	for _, ip := range []string{"2001:db8::1/128", "2001:db8::10/128", "2001:db8::11/128"} {
+	for _, ip := range []string{"2001:db8::1/128", "2001:db8::10/128", "2001:db8::12/128"} {
 		run("ip", "-6", "addr", "add", ip, "dev", "lo", "nodad")
 	}
 	run("nft", "add", "table", "inet", "aswired_firewall_test_foreign")
@@ -124,7 +124,7 @@ func TestFirewallNetNS(t *testing.T) {
 	if e != nil || strings.TrimSpace(ready) != "READY" {
 		t.Fatalf("foreign listener startup failed: %q %v", ready, e)
 	}
-	denied := r.Handle(context.Background(), wire.Command{Action: "network.firewall.apply", Params: request(1, "192.0.2.10", "2001:db8::10")})
+	denied := r.Handle(context.Background(), wire.Command{Action: "network.firewall.apply", Params: request(1, "192.0.2.10/31", "2001:db8::10/127")})
 	if denied.Status != "failed" || !strings.Contains(denied.Error, "another process") {
 		t.Fatalf("foreign same-port IPv4 socket was not protected: %+v", denied)
 	}
@@ -136,7 +136,7 @@ func TestFirewallNetNS(t *testing.T) {
 
 	// Capture nft's canonical kernel representation, which can differ between
 	// distribution versions. This diagnostic runs only in the isolated namespace.
-	probe, e := decodeFirewall(request(1, "192.0.2.10", "2001:db8::10"))
+	probe, e := decodeFirewall(request(1, "192.0.2.10/31", "2001:db8::10/127"))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -152,7 +152,7 @@ func TestFirewallNetNS(t *testing.T) {
 	t.Log("kernel rule format: " + run("nft", "-j", "list", "table", "inet", firewallTable))
 	run("nft", "delete", "table", "inet", firewallTable)
 
-	command(t, r, "network.firewall.apply", request(1, "192.0.2.10", "2001:db8::10"))
+	command(t, r, "network.firewall.apply", request(1, "192.0.2.10/31", "2001:db8::10/127"))
 	for _, route := range []struct {
 		source, destination string
 		port                int
@@ -166,13 +166,13 @@ func TestFirewallNetNS(t *testing.T) {
 	for _, route := range []struct {
 		source, destination string
 		port                int
-	}{{"192.0.2.11", "192.0.2.1", port4}, {"2001:db8::11", "2001:db8::1", port6}} {
+	}{{"192.0.2.12", "192.0.2.1", port4}, {"2001:db8::12", "2001:db8::1", port6}} {
 		if conn, e := dial(route.source, route.destination, route.port); e == nil {
 			conn.Close()
 			t.Fatalf("denied source accepted: %+v", route)
 		}
 	}
-	conn, e := dial("192.0.2.11", "127.0.0.1", echo.Addr().(*net.TCPAddr).Port)
+	conn, e := dial("192.0.2.12", "127.0.0.1", echo.Addr().(*net.TCPAddr).Port)
 	if e != nil {
 		t.Fatalf("unrelated service was restricted: %v", e)
 	}
@@ -198,7 +198,7 @@ func TestFirewallNetNS(t *testing.T) {
 	if _, e = io.ReadFull(live, response); e != nil || string(response[2:]) != "ping" {
 		t.Fatalf("real VLESS stream failed: %x %v", response, e)
 	}
-	command(t, r, "network.firewall.apply", request(2, "192.0.2.11", "2001:db8::11"))
+	command(t, r, "network.firewall.apply", request(2, "192.0.2.12", "2001:db8::12"))
 	live.SetDeadline(time.Now().Add(350 * time.Millisecond))
 	_, _ = live.Write([]byte("deny"))
 	if _, e = live.Read(make([]byte, 4)); e == nil {
@@ -220,12 +220,12 @@ func TestFirewallNetNS(t *testing.T) {
 	if status.Data["applied"] != true || status.Data["revision"] != uint64(3) {
 		t.Fatal(status)
 	}
-	if conn, e := dial("192.0.2.11", "192.0.2.1", port4); e == nil {
+	if conn, e := dial("192.0.2.12", "192.0.2.1", port4); e == nil {
 		conn.Close()
 		t.Fatal("restart failed to restore rejection")
 	}
 	command(t, r2, "network.firewall.apply", map[string]any{"revision": 4, "rules": []any{}})
-	conn, e = dial("192.0.2.11", "192.0.2.1", port4)
+	conn, e = dial("192.0.2.12", "192.0.2.1", port4)
 	if e != nil {
 		t.Fatal("rule removal did not restore access", e)
 	}

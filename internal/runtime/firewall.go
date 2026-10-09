@@ -453,6 +453,9 @@ func firewallBatch(state *firewallState, exists bool) ([]byte, error) {
 	}
 	if state != nil && len(state.Rules) > 0 {
 		commands = append(commands, map[string]any{"create": map[string]any{"table": map[string]any{"family": "inet", "name": firewallTable, "comment": firewallOwner(state)}}})
+		// nft 1.0.2 ignores table comments. An empty regular chain preserves the
+		// installation token across versions without adding a packet hook.
+		commands = append(commands, map[string]any{"add": map[string]any{"chain": map[string]any{"family": "inet", "table": firewallTable, "name": "owner_" + state.Owner}}})
 		commands = append(commands, map[string]any{"add": map[string]any{"chain": map[string]any{"family": "inet", "table": firewallTable, "name": "input", "type": "filter", "hook": "input", "prio": -10, "policy": "accept"}}})
 		for _, atom := range firewallAtoms(state) {
 			expr := []any{}
@@ -513,8 +516,8 @@ func parseFirewallAtom(raw any) (firewallAtom, error) {
 	if !ok {
 		return atom, errors.New("missing firewall expressions")
 	}
-	var family string
-	haveProtocol, havePort, haveSource := false, false, false
+	var family, explicitProtocol, sourceFamily string
+	havePort, haveSource := false, false
 	for i, item := range expr {
 		entry := jsonMap(item)
 		if len(entry) != 1 {
@@ -567,21 +570,20 @@ func parseFirewallAtom(raw any) (firewallAtom, error) {
 					}
 				}
 			case "l4proto":
-				if haveProtocol {
+				if explicitProtocol != "" {
 					return atom, errors.New("duplicate protocol")
 				}
-				haveProtocol = true
 				switch match["right"] {
 				case "tcp":
-					atom.Protocol = "tcp"
+					explicitProtocol = "tcp"
 				case "udp":
-					atom.Protocol = "udp"
+					explicitProtocol = "udp"
 				default:
 					switch jsonInt(match["right"]) {
 					case 6:
-						atom.Protocol = "tcp"
+						explicitProtocol = "tcp"
 					case 17:
-						atom.Protocol = "udp"
+						explicitProtocol = "udp"
 					default:
 						return atom, errors.New("invalid protocol")
 					}
@@ -597,18 +599,27 @@ func parseFirewallAtom(raw any) (firewallAtom, error) {
 		}
 		switch payload["field"] {
 		case "dport":
-			if havePort || !haveProtocol || payload["protocol"] != atom.Protocol {
+			if havePort || (payload["protocol"] != "tcp" && payload["protocol"] != "udp") {
 				return atom, errors.New("invalid destination port match")
 			}
+			// nft suppresses redundant meta dependencies when printing named
+			// payload expressions. The named TCP/UDP header retains the protocol
+			// constraint; raw payloads are deliberately not accepted here.
+			atom.Protocol = jsonString(payload["protocol"])
 			atom.Port = jsonInt(match["right"])
 			havePort = true
 		case "saddr":
-			if haveSource || family == "" || payload["protocol"] != family {
+			if haveSource || (payload["protocol"] != "ip" && payload["protocol"] != "ip6") {
 				return atom, errors.New("invalid source match")
 			}
+			sourceFamily = jsonString(payload["protocol"])
 			haveSource = true
 			value := jsonString(match["right"])
-			if prefix := jsonMap(jsonMap(match["right"])["prefix"]); prefix != nil && len(prefix) == 2 {
+			if right := jsonMap(match["right"]); right != nil {
+				prefix := jsonMap(right["prefix"])
+				if len(right) != 1 || len(prefix) != 2 || !onlyKeys(prefix, "addr", "len") {
+					return atom, errors.New("invalid source prefix")
+				}
 				value = jsonString(prefix["addr"]) + "/" + strconv.Itoa(jsonInt(prefix["len"]))
 			}
 			var e error
@@ -617,14 +628,17 @@ func parseFirewallAtom(raw any) (firewallAtom, error) {
 				return atom, e
 			}
 			p, _ := netip.ParsePrefix(atom.CIDR)
-			if (family == "ip") != p.Addr().Is4() {
+			if (sourceFamily == "ip") != p.Addr().Is4() {
 				return atom, errors.New("source family mismatch")
 			}
 		default:
 			return atom, errors.New("unmanaged payload match")
 		}
 	}
-	if !haveProtocol || !havePort || atom.Port < 1 || atom.Port > 65535 || (atom.Verdict == "accept" && (!haveSource || family == "")) || (atom.Verdict == "drop" && (haveSource || family != "")) || atom.Verdict == "" {
+	if (explicitProtocol != "" && explicitProtocol != atom.Protocol) || (family != "" && sourceFamily != "" && family != sourceFamily) {
+		return atom, errors.New("explicit protocol or address family contradicts named payload")
+	}
+	if !havePort || atom.Port < 1 || atom.Port > 65535 || (atom.Verdict == "accept" && !haveSource) || (atom.Verdict == "drop" && (haveSource || family != "")) || atom.Verdict == "" {
 		return atom, errors.New("incomplete firewall rule")
 	}
 	return atom, nil
@@ -657,7 +671,9 @@ func (r *Runtime) observeFirewall(ctx context.Context) (firewallObserved, error)
 	if json.Unmarshal([]byte(output), &listing) != nil {
 		return observed, errors.New("invalid nftables table response")
 	}
-	tables, chains := 0, 0
+	tables, chains, owners := 0, 0, 0
+	var owner, comment string
+	hasComment, ownerHasRules := false, false
 	for _, entry := range listing.NFTables {
 		if _, ok := entry["metainfo"]; ok {
 			continue
@@ -668,13 +684,26 @@ func (r *Runtime) observeFirewall(ctx context.Context) (firewallObserved, error)
 		}
 		if table := jsonMap(entry["table"]); table != nil {
 			tables++
-			observed.Owner = jsonString(table["comment"])
+			comment = jsonString(table["comment"])
+			_, hasComment = table["comment"]
 			if table["family"] != "inet" || table["name"] != firewallTable || !onlyKeys(table, "family", "name", "handle", "comment") {
 				observed.Valid = false
 			}
 			continue
 		}
 		if chain := jsonMap(entry["chain"]); chain != nil {
+			name := jsonString(chain["name"])
+			if strings.HasPrefix(name, "owner_") {
+				owners++
+				token := strings.TrimPrefix(name, "owner_")
+				decoded, decodeErr := hex.DecodeString(token)
+				if decodeErr != nil || len(decoded) != 32 || hex.EncodeToString(decoded) != token || chain["family"] != "inet" || chain["table"] != firewallTable || !onlyKeys(chain, "family", "table", "name", "handle") {
+					observed.Valid = false
+				} else {
+					owner = "ASWired allowlist v1 " + token
+				}
+				continue
+			}
 			chains++
 			if chain["family"] != "inet" || chain["table"] != firewallTable || chain["name"] != "input" || chain["type"] != "filter" || chain["hook"] != "input" || jsonInt(chain["prio"]) != -10 || chain["policy"] != "accept" || !onlyKeys(chain, "family", "table", "name", "handle", "type", "hook", "prio", "policy") {
 				observed.Valid = false
@@ -682,6 +711,9 @@ func (r *Runtime) observeFirewall(ctx context.Context) (firewallObserved, error)
 			continue
 		}
 		if rule := jsonMap(entry["rule"]); rule != nil {
+			if strings.HasPrefix(jsonString(rule["chain"]), "owner_") {
+				ownerHasRules = true
+			}
 			if rule["family"] != "inet" || rule["table"] != firewallTable || rule["chain"] != "input" || !onlyKeys(rule, "family", "table", "chain", "handle", "expr") {
 				observed.Valid = false
 			}
@@ -695,8 +727,13 @@ func (r *Runtime) observeFirewall(ctx context.Context) (firewallObserved, error)
 		}
 		observed.Valid = false
 	}
-	if tables != 1 || chains != 1 {
+	if tables != 1 || chains != 1 || owners != 1 || owner == "" || ownerHasRules || (hasComment && comment != owner) {
 		observed.Valid = false
+	}
+	// No comment-only fallback: another application's same-named table must
+	// never become manageable merely because nft omitted its metadata.
+	if tables == 1 && owners == 1 && owner != "" && !ownerHasRules && (!hasComment || comment == owner) {
+		observed.Owner = owner
 	}
 	return observed, nil
 }
