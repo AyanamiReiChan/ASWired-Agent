@@ -3,6 +3,25 @@ on: [push, pull_request]
 permissions:
   contents: read
 jobs:
+  firewall-netns:
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+      - name: Install namespace test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nftables iproute2
+      - name: Build firewall integration tests
+        run: go test -c -o "$RUNNER_TEMP/firewall.test" ./internal/runtime
+      - name: Verify actual firewall in an isolated network namespace
+        run: sudo env ASWIRED_FIREWALL_NETNS=1 unshare --net -- "$RUNNER_TEMP/firewall.test" -test.run '^TestFirewallNetNS$' -test.v -test.timeout 120s
   test:
     strategy:
       matrix:

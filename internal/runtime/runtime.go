@@ -24,17 +24,21 @@ import (
 )
 
 type Runtime struct {
-	logs       map[string]*logfiles.Manager
-	mu         sync.Mutex
-	cfg        config.Config
-	instance   *core.Instance
-	startedAt  time.Time
-	generation uint64
-	lastError  string
-	policies   *policies
-	forwards   *forwardManager
-	hostExec   func(context.Context, string, ...string) (string, error)
-	mihomo     *auxiliary.Manager
+	logs                map[string]*logfiles.Manager
+	mu                  sync.Mutex
+	cfg                 config.Config
+	instance            *core.Instance
+	startedAt           time.Time
+	generation          uint64
+	lastError           string
+	policies            *policies
+	forwards            *forwardManager
+	hostExec            func(context.Context, string, ...string) (string, error)
+	mihomo              *auxiliary.Manager
+	firewallReady       bool
+	firewallStatusCache map[string]any
+	firewallSyncDir     func(string) error
+	managementPorts     map[int]bool
 }
 
 func New(c config.Config) (*Runtime, error) {
@@ -101,6 +105,10 @@ func New(c config.Config) (*Runtime, error) {
 func (r *Runtime) Start(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if e := r.ensureFirewall(ctx); e != nil {
+		_, _ = r.firewallStatus(ctx)
+		return fmt.Errorf("firewall recovery failed; proxy listeners remain stopped: %w", e)
+	}
 	var failures []error
 	if e := r.restoreForwards(); e != nil {
 		failures = append(failures, fmt.Errorf("restore forwards: %w", e))
@@ -140,6 +148,9 @@ func (r *Runtime) Snapshot() map[string]any {
 	out["vision_splice"] = r.policies.spliceObservation()
 	out["network_forward"] = r.forwards.status()
 	out["mihomo"] = r.mihomo.Snapshot()
+	if r.firewallStatusCache != nil {
+		out["network_firewall"] = r.firewallStatusCache
+	}
 	if stats, e := r.readStats(ctx); e == nil {
 		out["xray_stats"] = stats
 	}
@@ -148,7 +159,7 @@ func (r *Runtime) Snapshot() map[string]any {
 func (r *Runtime) Capabilities() map[string]bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return map[string]bool{"proxy_ipv6_guard": true, "managed_account_reload": true, "managed_protocols_v2": true, "reality_scan": true, "embedded_core": true, "core_config": true, "dynamic_users": true, "xray_stats": true, "tcp_udp_forward": true, "network_quality_tcp": true, "network_quality_icmp": true, "wireguard": goruntime.GOOS == "linux", "warp_supplied_config": goruntime.GOOS == "linux", "certificate_deploy": true, "ports_check": true, "network_tcp_latency": true, "nginx_control": goruntime.GOOS == "linux", "service_control": goruntime.GOOS == "linux", "vision_splice_hook": r.cfg.XrayMode == "embedded" && (goruntime.GOOS == "linux" || goruntime.GOOS == "android"), "vision_splice_verified": false, "shared_rate_limit": r.cfg.XrayMode == "embedded", "connection_limits": r.cfg.XrayMode == "embedded", "simultaneous_ip_limits": r.cfg.XrayMode == "embedded", "federation": true, "mihomo_auxiliary": r.mihomo.Available(), "mihomo_original_ip": false, "snell": r.mihomo.Available(), "anytls": r.mihomo.Available()}
+	return map[string]bool{"firewall_allowlist": r.firewallSupported(), "proxy_ipv6_guard": true, "managed_account_reload": true, "managed_protocols_v2": true, "reality_scan": true, "embedded_core": true, "core_config": true, "dynamic_users": true, "xray_stats": true, "tcp_udp_forward": true, "network_quality_tcp": true, "network_quality_icmp": true, "wireguard": goruntime.GOOS == "linux", "warp_supplied_config": goruntime.GOOS == "linux", "certificate_deploy": true, "ports_check": true, "network_tcp_latency": true, "nginx_control": goruntime.GOOS == "linux", "service_control": goruntime.GOOS == "linux", "vision_splice_hook": r.cfg.XrayMode == "embedded" && (goruntime.GOOS == "linux" || goruntime.GOOS == "android"), "vision_splice_verified": false, "shared_rate_limit": r.cfg.XrayMode == "embedded", "connection_limits": r.cfg.XrayMode == "embedded", "simultaneous_ip_limits": r.cfg.XrayMode == "embedded", "federation": true, "mihomo_auxiliary": r.mihomo.Available(), "mihomo_original_ip": false, "snell": r.mihomo.Available(), "anytls": r.mihomo.Available()}
 }
 func timeNowMillis() int64 { return time.Now().UnixMilli() }
 
@@ -172,7 +183,17 @@ func (r *Runtime) Handle(ctx context.Context, c wire.Command) wire.Result {
 	var err error
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
+	if firewallStartsListener(c.Action) {
+		if e := r.ensureFirewall(ctx); e != nil {
+			result.Status, result.Error = "failed", "firewall recovery must succeed before starting listeners: "+e.Error()
+			return result
+		}
+	}
 	switch c.Action {
+	case "network.firewall.apply":
+		data, err = r.applyFirewall(ctx, c.Params)
+	case "network.firewall.status":
+		data, err = r.firewallStatus(ctx)
 	case "logs.read", "logs.remove":
 		data, err = r.logCommand(c)
 	case "reality.scan":

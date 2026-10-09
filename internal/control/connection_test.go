@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/AyanamiReiChan/ASWired-Agent/internal/config"
 	"github.com/AyanamiReiChan/ASWired-Agent/internal/updater"
 	"github.com/AyanamiReiChan/ASWired-Agent/internal/wire"
@@ -10,6 +11,48 @@ import (
 	"path/filepath"
 	"testing"
 )
+
+type connectionGuardRunner struct {
+	runner
+	reject bool
+	called bool
+}
+
+func (r *connectionGuardRunner) UpdateConnection(mode, listen string, persist func() error) error {
+	r.called = true
+	if r.reject {
+		return errors.New("protected management port")
+	}
+	return persist()
+}
+
+func TestConnectionSwitchUsesRuntimeGuardBeforePersistence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.json")
+	original := []byte(`{"connection_mode":"websocket","listen_address":"0.0.0.0:23889"}`)
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := &connectionGuardRunner{reject: true}
+	c := New(config.Config{ConfigPath: path, ConnectionMode: "websocket", AgentToken: "agent-token"}, r, "test")
+	reply := wire.Reply{ConnectionMode: "http", ListenAddress: "0.0.0.0:24443"}
+	if err := c.accept(context.Background(), reply); err == nil || !r.called {
+		t.Fatal("runtime did not veto management switch")
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil || string(stored) != string(original) {
+		t.Fatal("rejected switch modified persisted settings")
+	}
+	if mode, listen := c.connectionSettings(); mode != "websocket" || listen != "0.0.0.0:23889" || len(c.changed) != 0 {
+		t.Fatal("rejected switch changed live settings")
+	}
+	r.reject = false
+	if err := c.accept(context.Background(), reply); err != nil {
+		t.Fatal(err)
+	}
+	if mode, listen := c.connectionSettings(); mode != "http" || listen != "0.0.0.0:24443" || len(c.changed) != 1 {
+		t.Fatal("approved switch did not publish settings")
+	}
+}
 
 func TestConnectionSwitchPersistsAndPreservesPendingResults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.json")

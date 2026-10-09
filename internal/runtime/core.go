@@ -26,12 +26,18 @@ func parseConfig(b []byte) (*core.Config, error) {
 }
 
 func (r *Runtime) applyConfig(ctx context.Context, b []byte) (map[string]any, error) {
+	if err := r.ensureFirewall(ctx); err != nil {
+		return nil, err
+	}
 	old, readErr := os.ReadFile(r.cfg.XrayConfig)
 	if readErr != nil && !os.IsNotExist(readErr) {
 		return nil, readErr
 	}
 	b, err := r.preserveFederationConfig(b, old)
 	if err != nil {
+		return nil, err
+	}
+	if err := r.validateFirewallConfig(b); err != nil {
 		return nil, err
 	}
 	if err = ensureGeoAssets(ctx, b); err != nil {
@@ -109,11 +115,17 @@ func (r *Runtime) recoverCore(ctx context.Context) error {
 }
 
 func (r *Runtime) start(ctx context.Context) error {
+	if err := r.ensureFirewall(ctx); err != nil {
+		return err
+	}
 	if r.instance != nil {
 		return nil
 	}
 	b, err := os.ReadFile(r.cfg.XrayConfig)
 	if err != nil {
+		return err
+	}
+	if err = r.validateFirewallConfig(b); err != nil {
 		return err
 	}
 	if err = ensureGeoAssets(ctx, b); err != nil {

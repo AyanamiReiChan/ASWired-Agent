@@ -35,8 +35,22 @@ func (c *Client) setConnectionLocked(mode, listen string) error {
 	if c.cfg.ConfigPath == "" {
 		return errors.New("cannot persist connection settings without a configuration file; upgrade or reinstall Agent")
 	}
-	if err := config.SaveConnection(c.cfg.ConfigPath, mode, listen); err != nil {
-		return errors.New("could not persist connection settings; current connection retained")
+	persist := func() error {
+		if err := config.SaveConnection(c.cfg.ConfigPath, mode, listen); err != nil {
+			return errors.New("could not persist connection settings; current connection retained")
+		}
+		return nil
+	}
+	// Runtime serializes validation and persistence with firewall application.
+	// Lock order is Client.mu then Runtime.mu; the callback never acquires Client.mu.
+	if validator, ok := c.run.(interface {
+		UpdateConnection(string, string, func() error) error
+	}); ok {
+		if err := validator.UpdateConnection(mode, listen, persist); err != nil {
+			return err
+		}
+	} else if err := persist(); err != nil {
+		return err
 	}
 	c.cfg.ConnectionMode, c.cfg.ListenAddress = mode, listen
 	select {
