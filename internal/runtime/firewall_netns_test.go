@@ -134,6 +134,24 @@ func TestFirewallNetNS(t *testing.T) {
 	}
 	childStopped = true
 
+	// Capture nft's canonical kernel representation, which can differ between
+	// distribution versions. This diagnostic runs only in the isolated namespace.
+	probe, e := decodeFirewall(request(1, "192.0.2.10", "2001:db8::10"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	probeBatch, e := firewallBatch(&firewallState{Owner: strings.Repeat("0", 64), Rules: probe.Rules}, false)
+	if e != nil {
+		t.Fatal(e)
+	}
+	probePath := r.firewallPath("test-kernel-format.json")
+	if e = os.WriteFile(probePath, probeBatch, 0600); e != nil {
+		t.Fatal(e)
+	}
+	run("nft", "-j", "-f", probePath)
+	t.Log("kernel rule format: " + run("nft", "-j", "list", "table", "inet", firewallTable))
+	run("nft", "delete", "table", "inet", firewallTable)
+
 	command(t, r, "network.firewall.apply", request(1, "192.0.2.10", "2001:db8::10"))
 	for _, route := range []struct {
 		source, destination string
